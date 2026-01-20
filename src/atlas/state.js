@@ -2,10 +2,12 @@
 import {
   insertSession,
   updateSession,
+  getSessionById,
   getAllSessions,
   getTotalWorkoutCount,
   getTotalWorkoutTime,
   getTotalVolume,
+  insertExercise,
   getRecentExercises,
   getPRForExercise,
   insertPR,
@@ -16,9 +18,6 @@ import {
   insertCardio,
   getRecentCardio
 } from './db';
-
-
-// ---------- RANKS ----------
 
 const GreekRanks = [
   { level: 1, title: 'RECRUIT', subtitle: 'Aspiring Warrior', xpRequired: 0 },
@@ -42,8 +41,6 @@ function getRankForLevel(level) {
 function getNextRank(level) {
   return GreekRanks.find((r) => r.level > level);
 }
-
-// ---------- DEFAULT STATE ----------
 
 const defaultStats = {
   totalWorkouts: 0,
@@ -69,6 +66,7 @@ export const atlasState = {
   stats: defaultStats,
   chartData: defaultChart,
   recentExercises: [],
+  allSessions: [],
   currentSessionId: null,
   workoutStartTime: null,
   activeExercises: [],
@@ -77,10 +75,8 @@ export const atlasState = {
   currentExerciseForTimer: null,
   newPRDetected: null,
   templates: [],
-  cardioSessions: [] 
+  cardioSessions: []
 };
-
-// ---------- SUBSCRIBE ----------
 
 const listeners = new Set();
 export function subscribe(fn) {
@@ -90,8 +86,6 @@ export function subscribe(fn) {
 function notify() {
   listeners.forEach((fn) => fn());
 }
-
-// ---------- XP / LEVEL ----------
 
 function calculateLevelFromXP(xp) {
   if (xp < 500) return 1;
@@ -104,20 +98,18 @@ function calculateLevelFromXP(xp) {
   if (xp < 70000) return 30 + Math.floor((xp - 40000) / 2000);
   if (xp < 110000) return 40 + Math.floor((xp - 70000) / 2500);
   return Math.min(100, 50 + Math.floor((xp - 110000) / 3000));
-}
+} 
 
-function calculateWorkoutXP(exercises, sets, volume, duration) {
+function calculateWorkoutXP(exercises, sets, volume, durationMinutes) {
   if (!exercises || !sets) return 0;
   let xp = 0;
   xp += exercises * 20;
   xp += sets * 5;
   xp += Math.floor(volume / 10);
-  xp += Math.floor(Math.min(duration, 60) * 2);
-  if (duration >= 20 && exercises >= 3) xp += 50;
+  xp += Math.floor(Math.min(durationMinutes, 60) * 2);
+  if (durationMinutes >= 20 && exercises >= 3) xp += 50;
   return xp;
 }
-
-// ---------- LOADERS ----------
 
 export async function loadStats() {
   const totalWorkouts = await getTotalWorkoutCount();
@@ -125,16 +117,20 @@ export async function loadStats() {
   const totalVolume = (await getTotalVolume()) || 0;
   const totalPRs = await getTotalPRCount();
 
-  const sessions = await getAllSessions();
+  let sessions = await getAllSessions();
+  if (!Array.isArray(sessions)) sessions = [];
+
+  atlasState.allSessions = sessions;
+
   let totalXP = 0;
   sessions
-    .filter((s) => s.endTime && s.endTime !== '' && s.totalExercises > 0)
+    .filter((s) => s.endTime && s.totalExercises > 0)
     .forEach((s) => {
       totalXP += calculateWorkoutXP(
         s.totalExercises,
-        s.totalExercises * 3,
-        s.totalVolume,
-        s.totalDuration
+        s.totalSets || s.totalExercises * 3,
+        s.totalVolume || 0,
+        s.totalDuration || 0
       );
     });
 
@@ -143,17 +139,46 @@ export async function loadStats() {
   const nextRank = getNextRank(level);
 
   atlasState.stats = {
-    ...atlasState.stats,
+    ...defaultStats,
     totalWorkouts,
     totalTime,
-    personalRecords: totalPRs,
     totalVolume,
+    personalRecords: totalPRs,
     level,
     currentXP: totalXP,
     nextLevelXP: nextRank ? nextRank.xpRequired : totalXP + 1000,
     rankTitle: currentRank.title,
     rankSubtitle: currentRank.subtitle
   };
+
+  const weeklyWorkouts = {};
+  const volumeProgress = [];
+  sessions.forEach((s) => {
+    if (!s.endTime) return;
+    const date = (s.startTime || '').substring(0, 10);
+    const d = new Date(date);
+    const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+    weeklyWorkouts[weekday] = (weeklyWorkouts[weekday] || 0) + 1;
+    volumeProgress.push([date, s.totalVolume || 0]);
+  });
+
+  const muscleGroups = {};
+  const allExercises = await getRecentExercises(500);
+  allExercises.forEach((e) => {
+    const name = (e.exerciseName || '').toLowerCase();
+    let group = 'Full Body';
+    if (name.includes('squat') || name.includes('leg') || name.includes('deadlift'))
+      group = 'Lower';
+    else if (name.includes('bench') || name.includes('press') || name.includes('row'))
+      group = 'Upper';
+    else if (name.includes('curl') || name.includes('tricep'))
+      group = 'Arms';
+    else if (name.includes('lat') || name.includes('pulldown') || name.includes('pull-up'))
+      group = 'Back';
+    muscleGroups[group] = (muscleGroups[group] || 0) + 1;
+  });
+
+  atlasState.chartData = { weeklyWorkouts, volumeProgress, muscleGroups };
   notify();
 }
 
@@ -161,30 +186,14 @@ export async function loadRecentData() {
   atlasState.recentExercises = await getRecentExercises(10);
   notify();
 }
-
 export async function loadTemplates() {
   atlasState.templates = await getAllTemplates();
   notify();
 }
-
 export async function loadCardio() {
   atlasState.cardioSessions = await getRecentCardio(20);
   notify();
 }
-
-export async function addCardioSession(type, duration, distance) {
-  await insertCardio({
-    type,
-    duration,
-    distance,
-    timestamp: new Date().toISOString()
-  });
-  await loadCardio();
-}
-
-
-
-// ---------- WORKOUT LIFECYCLE ----------
 
 export async function startWorkout() {
   const now = new Date().toISOString();
@@ -193,6 +202,7 @@ export async function startWorkout() {
     endTime: '',
     totalDuration: 0,
     totalExercises: 0,
+    totalSets: 0,
     totalVolume: 0,
     notes: ''
   });
@@ -205,10 +215,12 @@ export async function startWorkout() {
 export async function finishWorkout() {
   const id = atlasState.currentSessionId;
   const startIso = atlasState.workoutStartTime;
-  if (!id || !startIso) return;
-  const start = new Date(startIso).getTime();
+
+  if (!id) return; // allow missing startIso, but require a session id
+
+  const start = startIso ? new Date(startIso).getTime() : Date.now();
   const end = Date.now();
-  const duration = Math.floor((end - start) / 60000);
+  const duration = Math.max(1, Math.floor((end - start) / 60000));
 
   let totalVolume = 0;
   let totalSets = 0;
@@ -219,10 +231,12 @@ export async function finishWorkout() {
     exerciseCount++;
     const repsStr = ex.sets.map((s) => s.reps).join(',');
     const weightsStr = ex.sets.map((s) => s.weight).join(',');
+
     ex.sets.forEach((s) => {
       totalVolume += s.reps * s.weight;
       totalSets++;
     });
+
     await insertExercise({
       sessionId: id,
       exerciseName: ex.name,
@@ -235,14 +249,14 @@ export async function finishWorkout() {
     });
   }
 
+  const session = await getSessionById(id);
   await updateSession({
-    id,
-    startTime: startIso,
+    ...session,
     endTime: new Date().toISOString(),
     totalDuration: duration,
     totalExercises: exerciseCount,
-    totalVolume,
-    notes: ''
+    totalSets,
+    totalVolume
   });
 
   atlasState.currentSessionId = null;
@@ -254,8 +268,6 @@ export async function finishWorkout() {
   await loadRecentData();
 }
 
-// ---------- ACTIVE EXERCISES ----------
-
 export function addExercise(name) {
   atlasState.activeExercises = [
     ...atlasState.activeExercises,
@@ -263,18 +275,17 @@ export function addExercise(name) {
   ];
   notify();
 }
-
 export function removeExercise(index) {
   atlasState.activeExercises = atlasState.activeExercises.filter((_, i) => i !== index);
   notify();
 }
 
 function calculateSmartRestTime(exerciseName, reps) {
-  const compounds = ['Squat', 'Deadlift', 'Bench Press', 'Row', 'Press', 'Pull-up', 'Chin-up', 'Dip'];
-  const isCompound = compounds.some((k) => exerciseName.toLowerCase().includes(k.toLowerCase()));
+  const compounds = ['squat', 'deadlift', 'bench', 'row', 'press', 'pull-up', 'chin-up', 'dip'];
+  const lowerName = exerciseName.toLowerCase();
+  const isCompound = compounds.some((k) => lowerName.includes(k));
   const isHeavy = reps <= 5;
   const isMedium = reps >= 6 && reps <= 10;
-
   if (isCompound && isHeavy) return 180;
   if (isCompound && isMedium) return 150;
   if (isCompound) return 120;
@@ -288,36 +299,36 @@ let restTimerHandle = null;
 export async function addSet(exIndex, reps, weight) {
   const arr = [...atlasState.activeExercises];
   if (!arr[exIndex]) return;
-  arr[exIndex] = {
-    ...arr[exIndex],
-    sets: [...arr[exIndex].sets, { reps, weight }]
-  };
+
+  const r = Number(reps) || 0;
+  const w = Number(weight) || 0;
+  if (r <= 0 || w <= 0) return;
+
+  const updated = { ...arr[exIndex] };
+  updated.sets = [...updated.sets, { reps: r, weight: w }];
+  arr[exIndex] = updated;
   atlasState.activeExercises = arr;
   notify();
 
-  const name = arr[exIndex].name;
-  await checkForPR(name, reps, weight);
-  const rest = calculateSmartRestTime(name, reps);
+  const name = updated.name;
+  await checkForPR(name, r, w);
+
+  const rest = calculateSmartRestTime(name, r);
   startRestTimer(rest, name);
 }
 
 export function removeSet(exIndex, setIndex) {
   const arr = [...atlasState.activeExercises];
   if (!arr[exIndex]) return;
-  arr[exIndex] = {
-    ...arr[exIndex],
-    sets: arr[exIndex].sets.filter((_, i) => i !== setIndex)
-  };
+  const updated = { ...arr[exIndex] };
+  updated.sets = updated.sets.filter((_, i) => i !== setIndex);
+  arr[exIndex] = updated;
   atlasState.activeExercises = arr;
   notify();
 }
 
-// ---------- REST TIMER ----------
-
 export function startRestTimer(seconds, exerciseName) {
-  if (restTimerHandle !== null) {
-    clearInterval(restTimerHandle);
-  }
+  if (restTimerHandle !== null) clearInterval(restTimerHandle);
   atlasState.restTimerActive = true;
   atlasState.currentExerciseForTimer = exerciseName;
   atlasState.restTimeRemaining = seconds;
@@ -331,7 +342,6 @@ export function startRestTimer(seconds, exerciseName) {
     }
   }, 1000);
 }
-
 export function stopRestTimer() {
   if (restTimerHandle !== null) {
     clearInterval(restTimerHandle);
@@ -343,16 +353,13 @@ export function stopRestTimer() {
   notify();
 }
 
-// ---------- PRs ----------
-
 function calculateOneRepMax(weight, reps) {
   return reps === 1 ? weight : weight * (1 + reps / 30);
 }
-
 async function checkForPR(exerciseName, reps, weight) {
   const existing = await getPRForExercise(exerciseName);
   const oneRepMax = calculateOneRepMax(weight, reps);
-  if (!existing || oneRepMax > existing.oneRepMax) {
+  if (!existing || oneRepMax > (existing.oneRepMax || 0)) {
     await insertPR({
       exerciseName,
       weight,
@@ -362,15 +369,13 @@ async function checkForPR(exerciseName, reps, weight) {
     });
     atlasState.newPRDetected = { name: exerciseName, oneRepMax };
     notify();
+    await loadStats();
   }
 }
-
 export function clearPRNotification() {
   atlasState.newPRDetected = null;
   notify();
 }
-
-// ---------- TEMPLATES ----------
 
 export async function saveCurrentAsTemplate(name, description) {
   const exercises = atlasState.activeExercises;
@@ -391,23 +396,34 @@ export async function saveCurrentAsTemplate(name, description) {
   });
   await loadTemplates();
 }
-
 export async function deleteTemplateById(id) {
   await deleteTemplate(id);
   await loadTemplates();
 }
 
-// ---------- RESET ALL (for MoreScreen) ----------
-
+export async function addCardioSession(type, duration, distance) {
+  await insertCardio({
+    type,
+    duration,
+    distance,
+    timestamp: new Date().toISOString()
+  });
+  await loadCardio();
+}
 export async function resetAllData() {
-  const sessions = await getAllSessions();
-  // simplest: clear IndexedDB by deleting database key
-  // (for now we just clear in-memory state)
+  // Soft reset of in‑memory state (IndexedDB remains unless you also clear it elsewhere)
   atlasState.currentSessionId = null;
   atlasState.workoutStartTime = null;
   atlasState.activeExercises = [];
-  atlasState.stats = defaultStats;
+  atlasState.restTimerActive = false;
+  atlasState.restTimeRemaining = 0;
+  atlasState.currentExerciseForTimer = null;
+  atlasState.newPRDetected = null;
+  atlasState.stats = { ...defaultStats };
+  atlasState.chartData = { ...defaultChart };
   atlasState.recentExercises = [];
+  atlasState.allSessions = [];
   atlasState.templates = [];
+  atlasState.cardioSessions = [];
   notify();
 }

@@ -34,7 +34,7 @@ export default function App() {
 
   let content = null;
   if (route === 'home') content = <HomeScreen state={state} onStartWorkout={() => navigate('workout')} />;
-  else if (route === 'workout') content = <WorkoutScreen state={state} onBack={() => navigate('home')} />;
+  else if (route === 'workout') content = <WorkoutScreen onBackToHome={() => setRoute('home')} />;
   // placeholders so nav works
   else if (route === 'stats') content = <StatsScreen />;
   else if (route === 'calendar') content = <CalendarScreen />;

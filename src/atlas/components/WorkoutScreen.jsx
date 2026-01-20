@@ -1,116 +1,112 @@
+// src/atlas/components/WorkoutScreen.jsx
 import React, { useEffect, useState } from 'react';
 import {
+  atlasState,
+  subscribe,
+  startWorkout,
+  finishWorkout,
   addExercise,
+  removeExercise,
   addSet,
   removeSet,
-  removeExercise,
-  finishWorkout
+  stopRestTimer
 } from '../state';
 
-const EXERCISES = [
-  'Barbell Bench Press', 'Incline Bench Press', 'Decline Bench Press',
-  'Dumbbell Bench Press', 'Incline Dumbbell Press', 'Decline Dumbbell Press',
-  'Chest Fly', 'Incline Fly', 'Cable Crossover', 'Pec Deck',
-  'Push-Ups', 'Diamond Push-Ups', 'Wide Push-Ups',
-  'Deadlift', 'Romanian Deadlift', 'Sumo Deadlift',
-  'Barbell Row', 'Bent-Over Row', 'T-Bar Row', 'Pendlay Row',
-  'Seated Cable Row', 'One-Arm Dumbbell Row', 'Chest Supported Row',
-  'Lat Pulldown', 'Wide Grip Pulldown', 'Close Grip Pulldown',
-  'Pull-Ups', 'Chin-Ups', 'Neutral Grip Pull-Ups',
-  'Face Pulls', 'Hyperextensions', 'Back Extensions',
-  'Overhead Press', 'Military Press', 'Push Press',
-  'Dumbbell Shoulder Press', 'Arnold Press', 'Seated Press',
-  'Lateral Raise', 'Front Raise', 'Rear Delt Fly',
-  'Cable Lateral Raise', 'Upright Row', 'Shrugs',
-  'Dumbbell Shrugs', 'Barbell Shrugs',
-  'Barbell Squat', 'Front Squat', 'Goblet Squat', 'Box Squat',
-  'Leg Press', 'Hack Squat', 'Bulgarian Split Squat',
-  'Walking Lunges', 'Reverse Lunges', 'Stationary Lunges',
-  'Leg Curl', 'Seated Leg Curl', 'Lying Leg Curl',
-  'Leg Extension', 'Hip Thrust', 'Glute Bridge', 'Single Leg Hip Thrust',
-  'Calf Raise', 'Seated Calf Raise', 'Donkey Calf Raise',
-  'Barbell Curl', 'EZ Bar Curl', 'Dumbbell Curl',
-  'Hammer Curl', 'Preacher Curl', 'Concentration Curl',
-  'Cable Curl', 'Incline Dumbbell Curl', 'Spider Curl',
-  'Close-Grip Bench Press', 'Tricep Extension', 'Overhead Tricep Extension',
-  'Skull Crushers', 'Tricep Dips', 'Bench Dips',
-  'Cable Pushdown', 'Rope Pushdown', 'Diamond Push-Ups',
-  'Plank', 'Side Plank', 'Plank with Reach',
-  'Crunches', 'Bicycle Crunches', 'Reverse Crunches',
-  'Leg Raises', 'Hanging Leg Raises', 'Knee Raises',
-  'Russian Twists', 'Ab Wheel Rollout', 'Cable Crunches',
-  'Mountain Climbers', 'Dead Bug', 'Bird Dog'
-].sort();
-
-
-export function WorkoutScreen({ state, onBack }) {
-  const { activeExercises, workoutStartTime, restTimerActive, restTimeRemaining, currentExerciseForTimer } =
-    state;
-  const [elapsed, setElapsed] = useState(0);
-  const [pickerOpen, setPickerOpen] = useState(false);
+export function WorkoutScreen({ onBackToHome }) {
+  const [state, setState] = useState(atlasState);
+  const [showPicker, setShowPicker] = useState(false);
 
   useEffect(() => {
-    if (!workoutStartTime) return;
-    const start = new Date(workoutStartTime).getTime();
-    const update = () => {
-      setElapsed(Math.floor((Date.now() - start) / 60000));
-    };
-    update();
-    const id = setInterval(update, 60000);
-    return () => clearInterval(id);
-  }, [workoutStartTime]);
+    const unsub = subscribe(() => setState({ ...atlasState }));
+    // start a session exactly once when entering screen
+    if (!atlasState.currentSessionId) {
+      startWorkout();
+    }
+    return unsub;
+  }, []);
+
+  const activeExercises = state.activeExercises || [];
+  const restActive = state.restTimerActive;
+  const restRemaining = state.restTimeRemaining;
+  const currentExercise = state.currentExerciseForTimer;
+
+  const totalSets = activeExercises.reduce((sum, ex) => sum + ex.sets.length, 0);
+
+  const handleFinish = async () => {
+    if (atlasState.currentSessionId && totalSets > 0) {
+      await finishWorkout();      // writes to DB + updates stats/xp/calendar
+    }
+    onBackToHome();               // just navigate home, no new workout
+  };
+
+  const handleAddExercise = () => {
+    setShowPicker(true);
+  };
 
   return (
     <div className="minimal-bg workout-root">
-      <header className="workout-topbar">
+      <div className="workout-topbar">
         <div>
           <div className="topbar-title">ACTIVE WORKOUT</div>
-          <div className="topbar-sub">{elapsed}min elapsed</div>
+          <div className="topbar-sub">{totalSets} sets</div>
         </div>
-        <button
-          className="topbar-btn"
-          onClick={async () => {
-            await finishWorkout();
-            onBack();
-          }}
-        >
+        <button className="topbar-btn" onClick={handleFinish}>
           FINISH
         </button>
-      </header>
+      </div>
 
-      {!activeExercises.length ? (
-        <div className="workout-empty">
-          <div className="emoji">⚡</div>
-          <h2>Ready to Start</h2>
-          <p>Add exercises to begin</p>
-        </div>
-      ) : (
-        <div className="workout-list">
-          {restTimerActive && currentExerciseForTimer && (
-            <div className="rest-overlay">
-              <div className="rest-card">
-                <p className="rest-title">{currentExerciseForTimer}</p>
-                <p className="rest-time">{restTimeRemaining}s</p>
-              </div>
-            </div>
-          )}
-          {activeExercises.map((ex, index) => (
-            <WorkoutExerciseCard key={index} exercise={ex} index={index} />
-          ))}
-          <div style={{ height: 100 }} />
+      {restActive && currentExercise && (
+        <div className="rest-overlay">
+          <div className="rest-card">
+            <p className="rest-title">Rest for {currentExercise}</p>
+            <p className="rest-time">{restRemaining}s</p>
+            <button className="chip" onClick={stopRestTimer}>
+              Skip
+            </button>
+          </div>
         </div>
       )}
 
-      <button className="fab" onClick={() => setPickerOpen(true)}>
-        +
-      </button>
+      {activeExercises.length === 0 ? (
+        <div className="workout-empty">
+          <div className="emoji">🏋️‍♂️</div>
+          <div style={{ height: 16 }} />
+          <div style={{ fontSize: 22, fontWeight: 700 }}>Ready to Start</div>
+          <div style={{ fontSize: 14, color: 'rgba(148,163,184,1)', marginTop: 4 }}>
+            Add exercises to begin
+          </div>
+          <div style={{ height: 24 }} />
+          <button className="primary-pill-btn" onClick={handleAddExercise}>
+            + ADD EXERCISE
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="workout-list">
+            {activeExercises.map((ex, index) => (
+              <WorkoutExerciseCard
+                key={index}
+                exercise={ex}
+                exerciseNumber={index + 1}
+                onAddSet={(reps, weight) => addSet(index, reps, weight)}
+                onRemoveSet={(setIndex) => removeSet(index, setIndex)}
+                onRemove={() => removeExercise(index)}
+              />
+            ))}
+          </div>
 
-      {pickerOpen && (
+          <button className="fab" onClick={handleAddExercise}>
+            +
+          </button>
+        </>
+      )}
+
+      {showPicker && (
         <ExercisePickerDialog
-          onDismiss={() => setPickerOpen(false)}
+          onDismiss={() => setShowPicker(false)}
           onSelect={(name) => {
             addExercise(name);
-            setPickerOpen(false);
+            setShowPicker(false);
           }}
         />
       )}
@@ -118,71 +114,134 @@ export function WorkoutScreen({ state, onBack }) {
   );
 }
 
-function WorkoutExerciseCard({ exercise, index }) {
+function WorkoutExerciseCard({ exercise, exerciseNumber, onAddSet, onRemoveSet, onRemove }) {
   const [reps, setReps] = useState('');
   const [weight, setWeight] = useState('');
 
+  const handleAdd = () => {
+    if (!reps || !weight) return;
+    onAddSet(reps, weight);
+    setReps('');
+    setWeight('');
+  };
+
   return (
-    <div className="glass-card workout-card">
-      <div className="workout-card-header">
-        <div>{exercise.name}</div>
-        <button className="chip" onClick={() => removeExercise(index)}>
-          Remove
+    <div className="glass-card" style={{ marginTop: 12 }}>
+      <div className="exercise-card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 999,
+              background: 'rgba(255,255,255,0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700
+            }}
+          >
+            {exerciseNumber}
+          </div>
+          <div>
+            <div className="exercise-name">{exercise.name}</div>
+            <div className="exercise-sub">{exercise.sets.length} sets</div>
+          </div>
+        </div>
+        <button className="chip" onClick={onRemove}>
+          ✕
         </button>
       </div>
-      <div className="sets-list">
-        {exercise.sets.map((s, i) => (
-          <div key={i} className="set-row">
-            <span>Set {i + 1}</span>
-            <span>
-              {s.reps} reps @ {s.weight}kg
-            </span>
-            <button className="chip" onClick={() => removeSet(index, i)}>
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
+
+      {exercise.sets.length > 0 && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {exercise.sets.map((s, i) => (
+            <div
+              key={i}
+              className="set-row"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.04)'
+              }}
+            >
+              <span>
+                Set {i + 1}: {s.reps} × {s.weight}kg
+              </span>
+              <button className="chip" onClick={() => onRemoveSet(i)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="set-input-row">
         <input
           type="number"
           placeholder="Reps"
           value={reps}
-          onChange={(e) => setReps(e.target.value)}
+          onChange={(e) => setReps(e.target.value.replace(/[^0-9]/g, ''))}
         />
         <input
           type="number"
-          placeholder="Weight"
+          placeholder="kg"
           value={weight}
-          onChange={(e) => setWeight(e.target.value)}
+          onChange={(e) => setWeight(e.target.value.replace(/[^0-9.]/g, ''))}
         />
-        <button
-          className="chip"
-          onClick={() => {
-            const r = parseInt(reps, 10);
-            const w = parseFloat(weight);
-            if (r > 0 && w > 0) {
-              addSet(index, r, w);
-              setReps('');
-              setWeight('');
-            }
-          }}
-        >
-          Add
+        <button className="chip" onClick={handleAdd}>
+          +
         </button>
       </div>
     </div>
   );
 }
 
+const DEFAULT_EXERCISES = [
+  'Barbell Squat',
+  'Barbell Bench Press',
+  'Barbell Row',
+  'Deadlift',
+  'Overhead Press',
+  'Lat Pulldown',
+  'Pull-Ups',
+  'Dumbbell Bench Press',
+  'Incline Bench Press',
+  'Leg Press',
+  'Romanian Deadlift',
+  'Lateral Raise',
+  'Bicep Curl',
+  'Tricep Pushdown',
+  'Plank'
+];
+
 function ExercisePickerDialog({ onDismiss, onSelect }) {
+  const [query, setQuery] = useState('');
+
+  const filtered = DEFAULT_EXERCISES.filter((name) =>
+    name.toLowerCase().includes(query.toLowerCase())
+  );
+
   return (
     <div className="dialog-backdrop" onClick={onDismiss}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Select Exercise</h3>
+        <h3 style={{ marginTop: 0, marginBottom: 8, letterSpacing: '0.1em' }}>
+          SELECT EXERCISE
+        </h3>
+        <input
+          className="danger-input"
+          placeholder="Search exercises..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ marginBottom: 12 }}
+        />
         <div className="dialog-list">
-          {EXERCISES.map((name) => (
-            <button key={name} className="dialog-item" onClick={() => onSelect(name)}>
+          {filtered.map((name) => (
+            <button
+              key={name}
+              className="dialog-item"
+              onClick={() => onSelect(name)}
+            >
               {name}
             </button>
           ))}
